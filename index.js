@@ -27,7 +27,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 import { DouyinBridge } from './lib/bridge.mjs'
-import { search, detail, share, dmList, readDM, sendDM } from './lib/douyin.mjs'
+import { search, detail, share, dmList, readDM, sendDM, sendImage, sendEmoji } from './lib/douyin.mjs'
 import { loadConfig, saveConfig, tailLog, paths } from './lib/state.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -98,6 +98,43 @@ const num = (v, dflt = 0, lo = -Infinity, hi = Infinity) => {
   const n = Number(v)
   if (!Number.isFinite(n)) return dflt
   return Math.min(hi, Math.max(lo, n))
+}
+
+/**
+ * 把读私信的结果压成「给模型看的形状」。
+ *
+ * 🔴 **必须把图片的 base64 剔掉**（2026-10）：
+ *    一张图几十万字符，塞进工具返回里会直接把上下文撑爆，
+ *    而且模型也看不见（它要的是附件块，不是文本）。
+ *    这里只留「有没有图 / 多大 / 什么类型」。
+ */
+function sanitizeRead(r) {
+  if (!r || typeof r !== 'object') return r
+  const out = { ...r }
+  if (Array.isArray(r.messages)) {
+    out.messages = r.messages.map((m) => {
+      const media = m.media || {}
+      const slim = {
+        fromMe: !!m.fromMe,
+        type: m.type || 'text',
+        text: m.text || '',
+      }
+      if (m.seq !== undefined) slim.seq = m.seq
+      if (m.time !== undefined) slim.time = m.time
+      if (m.system) slim.system = true
+      if (m.unsupported) slim.unsupported = true
+      if (m.isShare) slim.isShare = true
+      const md = {}
+      if (media.width || media.height) { md.width = media.width; md.height = media.height }
+      if (media.name) md.name = media.name
+      if (media.seconds) md.seconds = media.seconds
+      if (media.src) md.hasImage = true
+      if (media.data) md.hasImageData = true
+      if (Object.keys(md).length) slim.media = md
+      return slim
+    })
+  }
+  return out
 }
 
 /* ── 值班章程（给 agent 看的） ───────────────────────────────────────── */
@@ -310,6 +347,9 @@ export function apply(ctx, config) {
     {
       name: 'douyin_dm_read',
       description: '读某个好友的私信（会切到那个会话）。返回消息列表，每条标了是不是自己发的。\n'
+        + '· 非文本消息会标出 `type`（image ���示 / emoji 表情 / voice 语音 / video 视频 '
+        + '/ location 位置 / share 分享卡片）和能拿到的细节（图片尺寸、表情名、语音时长）\n'
+        + '· 图片本体**不随返回**（几十万字符），需要看图请让桥接注入（会自动带上图片）\n'
         + '⚠️ 抖音是虚拟列表，默认只有最近一屏；要更多历史传 scrollBack。',
       parameters: {
         type: 'object',
@@ -331,7 +371,7 @@ export function apply(ctx, config) {
           limit: num(args.limit, 30, 1, 100),
           scrollBack: num(args.scrollBack, 0, 0, 20),
         })
-        return safe(r)
+        return safe(sanitizeRead(r))
       },
     },
 
@@ -360,6 +400,95 @@ export function apply(ctx, config) {
         const b = await bridge.ensureBrowser()
         const r = await sendDM({ browser: b, text, uname: to })
         return safe(r)
+      },
+    },
+
+    {
+      name: 'douyin_dm_send_image',
+      description: '给某个好友发一张**图片**（抖音私信，支持 jpg/png/gif）。\n'
+        + '· `file` 填本机图片路径（最常用，比如你刚用别���工具生成的那张）\n'
+        + '· 或者填 `base64`（带 `data:image/png;base64,` 前缀也行，程序会自己剥）\n'
+        + '· `to` 留空 = 当前这个会话对应的好友\n'
+        + '⚠️ 抖音发图不是立刻上屏，本工具会等气泡真的出现才返回成功。',
+      parameters: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: '本机图片路径（jpg/png/gif/webp）' },
+          base64: { type: 'string', description: '图片的 base64（不想落盘时用这个）' },
+          mediaType: { type: 'string', description: 'base64 对应的类型，默认 image/png' },
+          to: { type: 'string', description: '发给谁（好友名，留空 = 当前会话的好友）' },
+        },
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args, exec) {
+        const to = str(args.to).trim() || peerOfExec(exec)
+        if (!to) return { ok: false, error: '不知道发给谁：要么指定 to，要么在某个好友的会话里调用' }
+        const bad = checkTarget(to, '发送目标')
+        if (bad) return { ok: false, error: bad }
+
+        // ① 本地文件
+        const file = str(args.file).trim()
+        if (file) {
+          if (!existsSync(file)) return { ok: false, error: `图片不存在：${file}` }
+          const b = await bridge.ensureBrowser()
+          return safe(await sendImage({ browser: b, file, uname: to }))
+        }
+
+        // ② base64 → 先落盘（抖音的上传控件只认文件）
+        const raw = str(args.base64).trim()
+        if (!raw) return { ok: false, error: '要给图，但既没给 file 也没给 base64' }
+        const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(raw)
+        const mediaType = str(args.mediaType).trim() || (m && m[1]) || 'image/png'
+        const payload = m ? m[3] : raw
+        let buf
+        try {
+          buf = Buffer.from(payload, 'base64')
+        } catch {
+          return { ok: false, error: 'base64 解不开' }
+        }
+        if (!buf.length) return { ok: false, error: 'base64 是空的' }
+        const ext = mediaType.includes('jpeg') ? '.jpg' : mediaType.includes('gif') ? '.gif' : mediaType.includes('webp') ? '.webp' : '.png'
+        const dir = join(bridge.cfg.userDataDir ? bridge.cfg.userDataDir : '.', 'outbox')
+        try { mkdirSync(dir, { recursive: true }) } catch { /* 目录建不了就报错 */ }
+        const out = join(dir, `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`)
+        try {
+          writeFileSync(out, buf)
+        } catch (e) {
+          return { ok: false, error: `图片落盘失败：${e.message}` }
+        }
+        const b = await bridge.ensureBrowser()
+        return safe({ ...(await sendImage({ browser: b, file: out, uname: to })), file: out })
+      },
+    },
+
+    {
+      name: 'douyin_dm_send_emoji',
+      description: '给某个好友发一个**表情**（抖音贴纸）。\n'
+        + '· `name` 填表情名，可以只写一部分（会按包含关系匹配）\n'
+        + '· 常用：续火花、比心、在干嘛、笑死、麻了、躺平、摇骰子、猜拳、开心、'
+        + '嗨、吹泡泡、黑人问号、早上好、晚上好、早点睡、爱心、便便、戳\n'
+        + '· `to` 留空 = 当前这个会话对应的好友\n'
+        + '⚠️ 点表情是**直接发出去**的，没有二次确认。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '表情名（支持部分匹配）' },
+          to: { type: 'string', description: '发给谁（好友名，留空 = 当前会话的好友）' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args, exec) {
+        const name = str(args.name).trim()
+        if (!name) return { ok: false, error: '没给表情名' }
+        const to = str(args.to).trim() || peerOfExec(exec)
+        if (!to) return { ok: false, error: '不知道发给谁：要么指定 to，要么在某个好友的会话里调用' }
+        const bad = checkTarget(to, '发送目标')
+        if (bad) return { ok: false, error: bad }
+        const b = await bridge.ensureBrowser()
+        return safe(await sendEmoji({ browser: b, name, uname: to }))
       },
     },
 
@@ -545,6 +674,23 @@ export function apply(ctx, config) {
     } catch { return {} }
   }
 
+  /* ── 附件服务（让「对方发来的图」能真的挂进会话） ─────────────────── */
+  //
+  // ⚠️ **单独 inject，不要塞进上面那个 `['agents','sessions']`**：
+  //    cordis 的 inject 会等所有依赖都到位才执行回调 ——
+  //    万一这个 profile 里没有附件服务，整个桥接腿就永远不启动了。
+  //    这里单独挂一个，挂不上就退化成「图片只以文字描述出现」。
+  try {
+    ctx.inject(['attachments'], (scoped) => {
+      bridge.setAttachmentCtx(scoped)
+      log('附件服务已挂上：对方发来的图片会真的存进会话给模型看')
+    })
+  } catch (e) {
+    log(`附件服务不可用（${e?.message || e}）：图片只以文字描述出现`)
+  }
+
+  /* ── HTTP 路由 ────────────────────────────────────────────────── */
+
   try {
     ctx.inject(['webServer'], (host) => {
       writeDiag({ phase: 'webserver-injected', webServerPort: host?.webServer?.port ?? null })
@@ -599,6 +745,12 @@ export function apply(ctx, config) {
               sendJson(res, 200, { ok: true, result: await bridge.selectorCheck() })
               return
             }
+            // 列出模型 + 「支不支持看图」（决定 AI 能不能真的看见对方发的图）
+            if (req.method === 'GET' && p === '/models') {
+              const prov = url.searchParams.get('provider') || ''
+              sendJson(res, 200, { ok: true, result: await bridge.listModels(prov) })
+              return
+            }
             // 读某个好友的完整对话历史（从 DSH 会话日志，不是抖音）
             if (req.method === 'GET' && p === '/history') {
               const peer = url.searchParams.get('peer') || ''
@@ -612,6 +764,9 @@ export function apply(ctx, config) {
             }
             // 调试用：绕过抖音，直接把一段文本注入某个好友的会话。
             // 用来单独验证「注入 → LLM 回复」这条链路，不被浏览器状态干扰。
+            //
+            // 🔴 还能带图（body.image = base64）——
+            //    用来验证「对方发来的图 → 存附件 → 模型真的能看见」这条链路。
             if (req.method === 'POST' && p === '/inject') {
               const body = await readBody(req)
               const peer = String(body.peer || '').trim()
@@ -620,7 +775,17 @@ export function apply(ctx, config) {
                 sendJson(res, 400, { ok: false, error: '要 peer 和 text' })
                 return
               }
-              const ok = await bridge.inject(peer, text)
+              const img = String(body.image || '').trim()
+              const media = img
+                ? {
+                  type: 'image',
+                  src: '',
+                  data: img.startsWith('data:') ? img : `data:image/png;base64,${img}`,
+                  width: Number(body.width) || 0,
+                  height: Number(body.height) || 0,
+                }
+                : null
+              const ok = await bridge.inject(peer, text, media)
               sendJson(res, 200, { ok, sessionId: bridge.sessionIdOf(peer), status: bridge.status() })
               return
             }

@@ -7,9 +7,12 @@
  * 用法：node tools/reinstall.mjs
  */
 import { callUnary } from './dsh-rpc.mjs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const NAME = 'dsh-douyin-bridge'
-const SPEC = 'E:\\deepseek harness-workspace\\dsh-douyin-bridge'
+// 插件目录 = 本脚本所在目录的上一级（不写死本机路径）
+const SPEC = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 console.log('① 移除...')
 const rm = await callUnary('pluginManager/removeBundle', { name: NAME })

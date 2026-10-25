@@ -117,17 +117,56 @@ node tools/_load-test.mjs    # 用假 ctx 复现 cordis 的 Proxy 陷阱
 | `douyin_detail` | 读视频详情（**完整文案正文**、作者、时长、统计、话题） |
 | `douyin_share` | 分享视频到私信（可捎一句话 `note`） |
 | `douyin_dm_list` | 列出会话 |
-| `douyin_dm_read` | 读某个好友的私信 |
-| `douyin_dm_send` | 发私信 |
+| `douyin_dm_read` | 读某个好友的私信（图片/表情/语音/位置/视频/分享卡片都会标出类型） |
+| `douyin_dm_send` | 发私信（纯文本） |
+| `douyin_dm_send_image` | 发**图片**（本机文件，或 base64） |
+| `douyin_dm_send_emoji` | 发**表情**（按名字，支持部分匹配） |
+| `douyin_history` | 读某个好友的**完整历史**（从 DSH 会话日志，不受抖音虚拟列表限制） |
 | `douyin_duty` | 读值班章程 |
-| `douyin_status` | 看桥接状态 |
+| `douyin_status` | 看桥接状态（含当前模型、附件服务有没有挂上） |
 | `douyin_whoami` | 看登录态 |
 | `douyin_login` | 打开浏览器登录 |
+| `douyin_selftest` | 选择器自检（改版时先跑这个） |
 
-`douyin_share` / `douyin_dm_send` 的 `to` **留空 = 当前会话对应的好友**，
-所以在某个好友的会话里聊天时不用传参数。
+`douyin_share` / `douyin_dm_send` / `douyin_dm_send_image` / `douyin_dm_send_emoji`
+的 `to` **留空 = 当前会话对应的好友**，所以在某个好友的会话里聊天时不用传参数。
 
 发送类工具受白名单约束：`peers` 配了就只有名单里的人能收到消息。
+
+### 图片是**真的**给模型看
+
+对方发来图片时，桥接会：
+
+1. 从 DOM 里把图片的 `data:` URL 抠出来（抖音网页端自己就把图转成 base64 内联了）
+2. 用 `attachments.saveImages()` 存进 DSH 的附件库
+3. 在注入的消息里挂一个 `{type:'image', attachment: ref}` 块
+
+模型收到的是**图片本身**，不是「[图片 200×150]」这行字。
+
+⚠️ **前提是模型支持图像输入**。文本模型收到 image 块时，DSH 会把它换成一句
+`[image omitted because this model accepts text only; …]`，模型只看到一串 sha。
+
+查当前模型支不支持：
+
+```powershell
+curl "http://127.0.0.1:<DSH端口>/dsh-douyin-bridge/models"   # 看 canSeeImage
+curl "http://127.0.0.1:<DSH端口>/dsh-douyin-bridge/status"   # 看 agentModel / attachments
+```
+
+如果 `canSeeImage` 是 `false`，在 profile 的 `cordis.patch.yml` 里给那个模型补一行
+（`dsh-llm-pi-ai` 的 catalog 不一定标对了能力，实测 MiniMax 就是漏标的）：
+
+```yaml
+- id: llm-pi-ai
+  config:
+    providers:
+      <provider>:
+        models:
+          - id: <model>
+            input: [text, image]     # ← 补这个
+```
+
+改完不用重启，`llm.listModels()` 会立刻读到新值。
 
 ---
 
@@ -319,6 +358,143 @@ hook 只能截获「它装上之后」的请求，所以：
 
 所以**主线还是 DOM**，接口层作为「有就用、没有就算了」的加速路径。
 真要彻底摆脱 DOM，得逆向那套帧格式做纯协议客户端（2~3 天起步）。
+
+---
+
+## 媒体（图片 / 表情 / 语音）踩过的坑
+
+### 16. 图片**不能**用 `box.querySelector('img')` 抓
+
+每条消息盒子里**第一个 `img` 是头像**。直接 `querySelector('img')`
+抓到的是 `p26.douyinpic.com/img/aweme-avat…`，看起来像图片地址，
+其实跟消息内容毫无关系 —— 而且不会报错，只会「AI 看到的图永远是同一张头像」。
+
+正确做法：**先定位类型容器，再取它里面的 img**。
+
+```js
+// ✅
+const box = boxOf(message)
+const img = box.querySelector('[class*="MessageItemImageImageBox"] img')
+```
+
+`lib/media.mjs` 里的 `imgOf(box, type)` 就是干这个的（`type` 决定容器 class）。
+
+### 17. 消息图片是 **`data:` URL**，而且会被抖音重新编码
+
+网页端发/收的图片，`img.src` 是 `data:image/png;base64,…`（不是 CDN 链接）。
+一张 640×480 的 JPEG 进来，抖音会转成 PNG、缩到 576×432。
+所以：
+
+- 别指望拿 `src` 当「图片唯一标识」——不同会话里同一张图的 base64 可能不同
+- 想比对就用 `mediaFingerprintPart()`，它只取长度和前后缀
+
+### 18. 表情气泡里**没有名字**，只能靠面板对照表
+
+表情气泡的 `innerText` 是空的，`img` 只有 CDN 地址、没有 `alt`/`title`。
+唯一能拿到名字的地方是**表情面板**：每一格 `emojiEmojiItememojiItem` 的内文就是名字。
+
+建表（`buildEmojiNameMap`）：打开面板 → 收集 `{src, name}` → Escape 关掉 → 缓存。
+
+⚠️ 两个必踩的点：
+
+1. **CDN 子域会变**（p3 / p5 / p9 / p11 / p26 都见过）
+2. **签名参数每次都不同**（`?lk3s=…&x-signature=…`）
+
+所以 key 必须取 `/obj/` 之后的**路径部分、且剥掉 query**：
+
+```js
+const key = String(src).split('/obj/')[1]?.split('?')[0] ?? ''
+```
+
+不剥 query 的话，面板里拿到的地址和气泡里的地址永远对不上，表情名永远是 `undefined`。
+
+### 19. 虚拟列表会让「数一数有没有多一条」彻底失效
+
+发图/发表情之后想验证「真的发出去了」，最容易想到的是数气泡个数。
+**不行** —— 抖音是虚拟列表，新气泡进来的同时旧气泡会被卸载，个数经常原地不动（1 → 1）。
+
+正确做法：**比对气泡 src 的集合**（`hasNewBubble(before, after)`）。
+
+### 20. 发图片必须走 CDP 的 file chooser，`dispatchEvent` 点不开
+
+点 `.semi-upload-add` 之后：
+
+- ❌ 用 `Input.dispatchMouseEvent` 发真实鼠标事件 → 文件选择框**不弹**
+- ✅ 用 JS `dispatchEvent` + `.click()` → 弹了
+
+然后在**点之前**就开好拦截，否则事件错过：
+
+```js
+await browser.send('Page.setInterceptFileChooserDialog', { enabled: true })
+const ev = browser.waitForEvent('Page.fileChooserOpened', { timeoutMs: 15000 })  // 先挂
+await clickUploadIcon()
+const { backendNodeId } = await ev
+await browser.send('DOM.setFileInputFiles', { files: [path], backendNodeId })
+```
+
+最后点确认按钮要按 **class 前缀**点（`[class*="MsgInputSendFileModalbtnSure"]`），
+点文字叶子节点没用。
+
+### 21. 发表情是**直接发出去**的，没有二次确认
+
+点面板里那一格 = 立刻发送，面板随即关闭。
+所以 `douyin_dm_send_emoji` 没有「预览」这一步，名字写错就是发错。
+
+### 22. `Emulation.setDeviceMetricsOverride` 必须带 `sessionId`
+
+不带 `sessionId` 会报 `'Emulation.setDeviceMetricsOverride' wasn't found` ——
+因为它挂在 page 级，不带 sessionId 就发到 browser 级去了，浏览器不认识这个方法。
+
+但**就算带上了也救不了抖音**：视口改了、布局不重算，会话项还是 0×0。
+唯一的办法是真的改窗口（`Browser.setWindowBounds`）。
+
+### 23. ⭐ 改窗口大小会**把私信面板关掉**
+
+这是最坑的一条。`ensurePanel` 里原来有一段「视口不够大就撑窗口」，
+结果变成：**每读一次私信 → 撑一次窗口 → 把刚打开的面板关掉 → 报「面板没打开」**。
+看起来像面板打不开，其实是自己关的。
+
+更糟的是：屏幕 CSS 尺寸只有 1536×816（1920 物理 + 125% 缩放）时，
+`setWindowBounds` 设 1920 会被系统**夹回 1536**，而 1532 宽下抖音的会话项
+渲染成 **0×0** —— 面板等于没开。
+
+所以现在的 `growWindow` 有两条早退：
+
+```js
+if (cur.w >= 1800 && cur.h >= 900) return false   // 已经够大
+if (Number(cur.sw || 0) < 1800) return false      // 屏幕本身不够宽，别动
+```
+
+**屏幕不够宽怎么办**：把系统缩放调到 100%（或换更大的屏）。
+1536 CSS px 是这台机器的硬上限，插件绕不过去。
+
+### 24. 模型「看见图」和「看不见图」的区别在 `inputModalities`
+
+`attachments.saveImages()` 只负责把图存下来。真正决定模型能不能看图的是
+`llm` 层的 `modelInfo.inputModalities`：
+
+```js
+// @deepseek-ai/dsh-llm/lib/index.js
+if (modelInfo.inputModalities !== void 0
+    && !modelInfo.inputModalities.includes('image')
+    && projectedMessages.some((m) => contentHasImage(m.content))) {
+  projectedMessages = projectImagesForTextModel(projectedMessages)   // ← 图被换成一行字
+}
+```
+
+而 `inputModalities` 来自 pi-ai catalog 里那条模型的 `input` 字段。
+**catalog 会漏标**：MiniMax-M3.1-Flash 在 catalog 里写的是 `["text"]`，
+但直连 Anthropic 协议接口实测它**能准确读出图里的文字**。
+补一行 `input: [text, image]` 就好了，不用重启。
+
+### 25. 验证「模型看见图了」要读**原始会话日志**
+
+插件的 `/events` 接口只回 `type` / `seq` / `content` 摘要，**不含 reasoning**。
+模型其实一眼就读出了图里的字，但都写在 reasoning 里 —— 摘要里看不到，
+于是验证脚本误判「它看不到图」，白折腾好几轮。
+
+要看全文就读 `$DSH_HOME/sessions/**/session.v4.jsonl.zstd`
+（`lib/session-history.mjs` 的 `readSessionEvents`）。
 
 ---
 

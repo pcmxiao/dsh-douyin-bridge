@@ -36,6 +36,7 @@ const required = [
   'prompts/duty.md', 'locale/en.json', 'locale/zh.json', 'icon.svg',
   'README.md', 'DISCLAIMER.md', 'LICENSE', 'NOTICE.md',
   'lib/browser.mjs', 'lib/douyin.mjs', 'lib/state.mjs', 'lib/bridge.mjs', 'lib/hostdeps.mjs',
+  'lib/media.mjs', 'lib/selectors.mjs', 'lib/session-history.mjs', 'lib/douyin-api.mjs', 'lib/pb.mjs',
 ]
 for (const f of required) {
   const p = join(ROOT, f)
@@ -47,7 +48,8 @@ if (failures === 0) ok(`${required.length} 个必备文件都在`)
 /* 2. 语法 */
 head('语法')
 const jsFiles = ['index.js', 'client.js',
-  'lib/browser.mjs', 'lib/douyin.mjs', 'lib/state.mjs', 'lib/bridge.mjs', 'lib/hostdeps.mjs']
+  'lib/browser.mjs', 'lib/douyin.mjs', 'lib/state.mjs', 'lib/bridge.mjs', 'lib/hostdeps.mjs',
+  'lib/media.mjs', 'lib/selectors.mjs', 'lib/session-history.mjs', 'lib/douyin-api.mjs', 'lib/pb.mjs']
 for (const f of jsFiles) {
   const p = join(ROOT, f)
   if (!existsSync(p)) continue
@@ -186,7 +188,42 @@ try {
   }
 } catch (e) { warn(`反引号检查跑不起来：${e?.message || e}`) }
 
-/* 10. 隐私自查提示 */
+/* 10. 媒体（图片 / 表情 / 语音） */
+head('媒体支持')
+try {
+  const media = await import(pathToFileURL(join(ROOT, 'lib', 'media.mjs')).href)
+  const need = ['MEDIA', 'pageMediaHelper', 'describeMedia', 'dataUrlToBytes', 'mergeMessages', 'mediaFingerprintPart', 'rememberEmojiNames', 'lookupEmojiName']
+  const missing = need.filter((n) => media[n] === undefined)
+  if (missing.length) bad(`lib/media.mjs 缺导出：${missing.join(', ')}`)
+  else ok(`lib/media.mjs 的 ${need.length} 个导出都在`)
+
+  // 媒体描述必须是**中性的** —— 自己的消息也会走同一条描述路径，
+  // 写成「对方发来一张图」在回看自己的消息时就是错的。
+  const cases = [
+    [{ type: 'image', media: { width: 200, height: 150 } }, '[图片 200×150]'],
+    [{ type: 'emoji', media: { name: '比心' } }, '[表情：比心]'],
+    [{ type: 'emoji', media: {} }, '[表情]'],
+    [{ type: 'voice', media: { seconds: 3 } }, '[语音 3 秒]'],
+    [{ type: 'video', media: {} }, '[视频]'],
+  ]
+  let descBad = 0
+  for (const [m, want] of cases) {
+    const got = media.describeMedia({ ...m, media: m.media })
+    if (got !== want) { descBad++; console.log(`    · ${JSON.stringify(m)} → ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}`) }
+  }
+  if (descBad) bad(`describeMedia 有 ${descBad} 个用例不对`)
+  else ok('describeMedia 措辞中性且格式正确')
+
+  // 表情名对照表的 key：必须**剥掉 query**，否则面板和气泡的签名不同，永远对不上
+  const a = media.mediaFingerprintPart({ type: 'emoji', media: { src: 'https://p3-sign.douyinpic.com/obj/im-resource/170-ts-abc?lk3s=1&x-signature=X' } })
+  const b2 = media.mediaFingerprintPart({ type: 'emoji', media: { src: 'https://p26-sign.douyinpic.com/obj/im-resource/170-ts-abc?lk3s=2&x-signature=Y' } })
+  if (a !== b2) bad('表情指纹没剥掉 CDN 子域/签名 —— 对照表会永远命中不了')
+  else ok('表情指纹忽略了 CDN 子域和签名')
+} catch (e) {
+  bad(`媒体模块检查失败：${e?.message || e}`)
+}
+
+/* 11. 隐私自查提示 */
 head('隐私自查')
 console.log('    记得 push 之前跑一遍 README / DISCLAIMER 里给的 git grep 命令。')
 console.log('    本仓库源码里不含账号、Cookie、好友名、本机路径。')
