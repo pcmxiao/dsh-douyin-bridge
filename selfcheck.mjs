@@ -34,7 +34,7 @@ head('文件')
 const required = [
   'index.js', 'client.js', 'cordis.patch.yml', 'package.json',
   'prompts/duty.md', 'locale/en.json', 'locale/zh.json', 'icon.svg',
-  'README.md', 'DISCLAIMER.md', 'LICENSE', 'NOTICE.md',
+  'README.md', 'PITFALLS.md', 'DISCLAIMER.md', 'LICENSE', 'NOTICE.md',
   'lib/browser.mjs', 'lib/douyin.mjs', 'lib/state.mjs', 'lib/bridge.mjs', 'lib/hostdeps.mjs',
   'lib/media.mjs', 'lib/selectors.mjs', 'lib/session-history.mjs', 'lib/douyin-api.mjs', 'lib/pb.mjs',
 ]
@@ -188,7 +188,26 @@ try {
   }
 } catch (e) { warn(`反引号检查跑不起来：${e?.message || e}`) }
 
-/* 10. 媒体（图片 / 表情 / 语音） */
+/* 10. Markdown 内部链接 */
+head('文档链接')
+try {
+  // README / PITFALLS 之间互相引用很多，改了标题忘了改锚点很常见。
+  const { spawnSync } = await import('node:child_process')
+  const r = spawnSync(process.execPath, [join(ROOT, 'tools', 'check-links.mjs')], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  const out = String(r.stdout || '').trim()
+  if (r.status === 0) ok(out.split('\n').pop() || '内部链接全部有效')
+  else {
+    bad('文档里有断链')
+    for (const line of out.split('\n').filter((l) => l.includes('✘')).slice(0, 6)) {
+      console.log(`    · ${line.trim()}`)
+    }
+  }
+} catch (e) { warn(`链接检查跑不起来：${e?.message || e}`) }
+
+/* 11. 媒体（图片 / 表情 / 语音） */
 head('媒体支持')
 try {
   const media = await import(pathToFileURL(join(ROOT, 'lib', 'media.mjs')).href)
@@ -223,7 +242,7 @@ try {
   bad(`媒体模块检查失败：${e?.message || e}`)
 }
 
-/* 11. 隐私自查提示 */
+/* 12. 隐私自查提示 */
 head('隐私自查')
 console.log('    记得 push 之前跑一遍 README / DISCLAIMER 里给的 git grep 命令。')
 console.log('    本仓库源码里不含账号、Cookie、好友名、本机路径。')
