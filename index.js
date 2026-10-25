@@ -395,6 +395,27 @@ export function apply(ctx, config) {
         return safe(await bridge.selectorCheck())
       },
     },
+
+    {
+      name: 'douyin_history',
+      description: '读某个好友的**完整对话历史**。'
+        + '这些是从 DSH 自己的会话日志里读的，比在抖音页面上翻（只能看到最近约 20 条）'
+        + '完整得多，而且不受抖音改版影响。想知道「之前聊过什么」就用这个，别去翻抖音。',
+      parameters: {
+        type: 'object',
+        properties: {
+          peer: { type: 'string', description: '好友名。留空 = 当前会话对应的好友' },
+          limit: { type: 'number', description: '最多返回多少条（默认 100）' },
+        },
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args, exec) {
+        const peer = str(args.peer) || peerOfExec(exec)
+        if (!peer) return { ok: false, error: '不知道读谁的历史：给 peer，或在好友的会话里调用' }
+        return safe(await bridge.history(peer, num(args.limit, 100)))
+      },
+    },
   ]
 
   const disposers = []
@@ -576,6 +597,17 @@ export function apply(ctx, config) {
             // 选择器自检：抖音改版时用它确认「哪条降级链挂了」
             if (req.method === 'POST' && p === '/selftest') {
               sendJson(res, 200, { ok: true, result: await bridge.selectorCheck() })
+              return
+            }
+            // 读某个好友的完整对话历史（从 DSH 会话日志，不是抖音）
+            if (req.method === 'GET' && p === '/history') {
+              const peer = url.searchParams.get('peer') || ''
+              const limit = Number(url.searchParams.get('limit')) || 100
+              if (!peer) {
+                sendJson(res, 400, { ok: false, error: '要 peer 参数' })
+                return
+              }
+              sendJson(res, 200, { ok: true, result: await bridge.history(peer, limit) })
               return
             }
             // 调试用：绕过抖音，直接把一段文本注入某个好友的会话。
