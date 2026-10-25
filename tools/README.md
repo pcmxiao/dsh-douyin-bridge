@@ -1,0 +1,47 @@
+# tools/ —— 开发与排障脚本
+
+这些不是插件运行时的一部分，是**给你自己排障用的**。插件装好之后可以不管它们。
+
+| 脚本 | 干什么 |
+|---|---|
+| `_load-test.mjs` | 用假的 ctx 跑一遍 `apply()`，**模仿 cordis 的 Proxy 陷阱**（没 inject 的服务一读就抛）。`selfcheck.mjs` 会调它。 |
+| `dsh-rpc.mjs` | 直接打 DSH 的 Web API（离线签一个 browser-session cookie），用来调 `pluginManager/*` 和插件自己的 HTTP 接口。 |
+| `probe.mjs` | 问浏览器：登录了没、会话列表读得到吗、当前开的是谁的会话。 |
+| `probe-dm.mjs` | 端到端：进某个好友的聊天 → 读消息 → 可选发一条 → 读回验证。 |
+| `session-log.mjs` | 解压并打印 DSH 的会话事件（`session.v4.jsonl.zstd`），看 LLM 到底回了什么。 |
+
+## 常见用法
+
+```bash
+# 加载测试（改完 index.js 先跑这个）
+node tools/_load-test.mjs
+
+# 浏览器到底登没登录、能不能读到会话列表
+node tools/probe.mjs
+
+# 读某个好友的私信
+node tools/probe-dm.mjs "好友名"
+
+# 读 + 发一条 + 读回验证
+node tools/probe-dm.mjs "好友名" --send "测试"
+
+# 看桥接会话的 LLM 输出
+node tools/session-log.mjs            # 列出所有 douyin-* 会话
+node tools/session-log.mjs "<sessionId>"
+
+# 调插件自己的 HTTP 接口（要 DSH 在跑）
+node tools/dsh-rpc.mjs GET /dsh-douyin-bridge/status
+node tools/dsh-rpc.mjs POST /dsh-douyin-bridge/poll
+node tools/dsh-rpc.mjs POST /dsh-douyin-bridge/inject "@args.json"
+
+# 调 DSH 的 RPC（插件管理）
+node tools/dsh-rpc.mjs pluginManager/listPlugins "{}"
+```
+
+## 注意
+
+- `probe*.mjs` 会和桥接**抢同一个页面**。跑之前先在设置页点「停止」，或
+  `node tools/dsh-rpc.mjs POST /dsh-douyin-bridge/stop`。
+- `dsh-rpc.mjs` 会从 `$DSH_HOME/.credentials.yaml` 读 `client-connection/browser-session`
+  的密钥来签 cookie。**它只在本机跑得通，也不要把它里面的东西贴出去。**
+- Windows 下命令行传 JSON 会被 PowerShell 吃掉引号，所以 JSON 参数用 `@文件` 形式。

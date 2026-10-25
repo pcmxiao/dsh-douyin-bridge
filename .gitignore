@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+shots/
+out/
+*.tgz
+.env
+.env.*
+config.json
+sessions.json
