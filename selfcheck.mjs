@@ -166,7 +166,27 @@ try {
   }
 } catch (e) { bad(`加载测试跑不起来：${e?.message || e}`) }
 
-/* 9. 隐私自查提示 */
+/* 9. 页面 JS 模板里的裸反引号 */
+head('模板反引号')
+try {
+  // `browser.eval(\`...\`)` 这种模板里一旦出现反引号（哪怕是注释里的），
+  // 模板就被提前截断，报错是 `SyntaxError: missing ) after argument list`，
+  // 行号还指向模板开头 —— 极难定位。这个检查直接列出行号。
+  const { spawnSync } = await import('node:child_process')
+  const r = spawnSync(process.execPath, [join(ROOT, 'tools', 'check-backticks.mjs'), join(ROOT, 'lib', 'douyin.mjs')], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  if (r.status === 0) ok('douyin.mjs 的页面模板里没有裸反引号')
+  else {
+    bad('页面模板里出现了裸反引号 —— 会被提前截断')
+    for (const line of String(r.stdout || '').split('\n').filter((l) => l.includes('✘') || l.trim().startsWith('//')).slice(0, 6)) {
+      console.log(`    · ${line.trim()}`)
+    }
+  }
+} catch (e) { warn(`反引号检查跑不起来：${e?.message || e}`) }
+
+/* 10. 隐私自查提示 */
 head('隐私自查')
 console.log('    记得 push 之前跑一遍 README / DISCLAIMER 里给的 git grep 命令。')
 console.log('    本仓库源码里不含账号、Cookie、好友名、本机路径。')

@@ -383,6 +383,18 @@ export function apply(ctx, config) {
         return safe({ ...bridge.status(), config: bridge.cfg, log: tailLog(20) })
       },
     },
+
+    {
+      name: 'douyin_selftest',
+      description: '抖音选择器自检。工具「返回成功但什么都没发生」时先跑这个：'
+        + '它会逐个探测会话项 / 消息容器 / 输入框这些关键选择器，'
+        + '告诉你哪条降级链还在生效、哪条全挂了（多半是抖音改版）。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: TEXT_OUTPUT,
+      async execute() {
+        return safe(await bridge.selectorCheck())
+      },
+    },
   ]
 
   const disposers = []
@@ -448,12 +460,16 @@ export function apply(ctx, config) {
       }
     }
 
-    ctx.effect(() => {
+    // 🔴 这里必须用 `scoped.effect`，不能用外层的 `ctx.effect`。
+    //    外层 ctx 的 fiber 在 inject 回调执行时可能已经「inactive」，
+    //    在它上面注册 effect 会报 `cannot create effect on inactive context`，
+    //    而且这个错误只在日志里出现一次，插件看起来正常但观察器/轮询都没挂上。
+    scoped.effect(() => {
       const off = bridge.attachObserver()
       return off
     }, 'douyin-bridge: session observer')
 
-    ctx.effect(async function* () {
+    scoped.effect(async function* () {
       if (!bridge.cfg.enabled) {
         log('桥接被配置关掉了（enabled=false），只提供工具')
         return
@@ -555,6 +571,11 @@ export function apply(ctx, config) {
             }
             if (req.method === 'POST' && p === '/poll') {
               sendJson(res, 200, { ok: true, result: await bridge.pollOnce() })
+              return
+            }
+            // 选择器自检：抖音改版时用它确认「哪条降级链挂了」
+            if (req.method === 'POST' && p === '/selftest') {
+              sendJson(res, 200, { ok: true, result: await bridge.selectorCheck() })
               return
             }
             // 调试用：绕过抖音，直接把一段文本注入某个好友的会话。

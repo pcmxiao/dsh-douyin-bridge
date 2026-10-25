@@ -25,7 +25,7 @@ for (const c of list.conversations ?? []) console.log('  ·', c.name, '|', c.tim
 
 console.log(`\n── 读 ${peer} 的私信`)
 const r = await readDM({ browser: b, uname: peer, limit: 12 })
-console.log('ok:', r.ok, 'error:', r.error ?? '')
+console.log('ok:', r.ok, 'error:', r.error ?? '', '| via:', r.via ?? 'dom')
 if (!r.ok) process.exit(1)
 console.log('消息数:', r.messages?.length ?? 0)
 for (const m of (r.messages ?? []).slice(-12)) {

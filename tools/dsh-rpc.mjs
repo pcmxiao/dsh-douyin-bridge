@@ -23,8 +23,65 @@ import http from 'node:http'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
-const BASE_URL = process.env.DSH_URL || 'http://127.0.0.1:62942'
+/**
+ * DSH Web 的地址。
+ *
+ * 🔴 端口**每次启动都可能变**（Electron 挑空闲端口），所以不能写死。
+ *    优先级：
+ *      ① `$DSH_URL` 环境变量
+ *      ② 从 DSH 进程的**监听端口**反查（最可靠）
+ *      ③ 常见端口探测
+ */
+const BASE_URL = await resolveBaseUrl()
 const BROWSER_SESSION_KEY = 'client-connection/browser-session'
+
+async function resolveBaseUrl() {
+  if (process.env.DSH_URL) return process.env.DSH_URL.replace(/\/$/, '')
+
+  // ① 找 DSH 进程持有的监听端口
+  //    思路：先拿 DSH 主进程的 PID，再列出该 PID 的 LISTEN 端口。
+  //    （命令行里没有 --port，只能这样反查。）
+  try {
+    const { execFileSync } = await import('node:child_process')
+    // 用 cmd 调 powershell 并强制单行输出，避免格式化成表格
+    const script = [
+      "$pids = @(Get-CimInstance Win32_Process -Filter \"Name like '%DeepSeek%'\" | ForEach-Object { $_.ProcessId })",
+      "$ports = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $pids -contains $_.OwningProcess } | ForEach-Object { $_.LocalPort } | Sort-Object -Unique)",
+      "Write-Output ($ports -join ' ')",
+    ].join('; ')
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', timeout: 15000,
+    })
+    const ports = String(out).match(/\d{4,5}/g) || []
+    for (const p of ports) {
+      const url = `http://127.0.0.1:${p}`
+      if (await reachable(url)) return url
+    }
+  } catch { /* 拿不到就往下走 */ }
+
+  // ② 探测常见端口
+  for (const port of [54257, 62942, 59295, 43120, 3080]) {
+    const url = `http://127.0.0.1:${port}`
+    if (await reachable(url)) return url
+  }
+
+  // ③ 都不行就退回默认值（报错时至少提示是哪个地址）
+  return 'http://127.0.0.1:62942'
+}
+
+function reachable(base) {
+  return new Promise((resolve) => {
+    try {
+      const u = new URL(base)
+      const req = http.request({
+        hostname: u.hostname, port: u.port || 80, path: '/', method: 'GET', timeout: 1500,
+      }, (res) => { res.resume(); resolve(true) })
+      req.on('error', () => resolve(false))
+      req.on('timeout', () => { req.destroy(); resolve(false) })
+      req.end()
+    } catch { resolve(false) }
+  })
+}
 
 const base64url = (buf) => Buffer.from(buf).toString('base64')
   .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')

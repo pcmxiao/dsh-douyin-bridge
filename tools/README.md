@@ -8,6 +8,7 @@
 | `dsh-rpc.mjs` | 直接打 DSH 的 Web API（离线签一个 browser-session cookie），用来调 `pluginManager/*` 和插件自己的 HTTP 接口。 |
 | `probe.mjs` | 问浏览器：登录了没、会话列表读得到吗、当前开的是谁的会话。 |
 | `probe-dm.mjs` | 端到端：进某个好友的聊天 → 读消息 → 可选发一条 → 读回验证。 |
+| `probe-canary.mjs` | **选择器自检**：逐个探测关键选择器，看哪条降级链在生效、哪条全挂了。抖音改版后先跑这个。 |
 | `session-log.mjs` | 解压并打印 DSH 的会话事件（`session.v4.jsonl.zstd`），看 LLM 到底回了什么。 |
 
 ## 常见用法
@@ -29,9 +30,13 @@ node tools/probe-dm.mjs "好友名" --send "测试"
 node tools/session-log.mjs            # 列出所有 douyin-* 会话
 node tools/session-log.mjs "<sessionId>"
 
+# 抖音改版了？先跑选择器自检，看哪条降级链挂了
+node tools/probe-canary.mjs
+
 # 调插件自己的 HTTP 接口（要 DSH 在跑）
 node tools/dsh-rpc.mjs GET /dsh-douyin-bridge/status
 node tools/dsh-rpc.mjs POST /dsh-douyin-bridge/poll
+node tools/dsh-rpc.mjs POST /dsh-douyin-bridge/selftest
 node tools/dsh-rpc.mjs POST /dsh-douyin-bridge/inject "@args.json"
 
 # 调 DSH 的 RPC（插件管理）
