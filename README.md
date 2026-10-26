@@ -116,6 +116,9 @@ node tools/_load-test.mjs    # 用假 ctx 复现 cordis 的 Proxy 陷阱
 | `douyin_search` | 搜视频 |
 | `douyin_detail` | 读视频详情（**完整文案正文**、作者、时长、统计、话题） |
 | `douyin_share` | 分享视频到私信（可捎一句话 `note`） |
+| `douyin_comment_list` | 列出某个视频下的评论（挑要处理的那一条） |
+| `douyin_comment_post` | 在视频下**发评论** |
+| `douyin_comment_share` | 把**某条评论**分享给某个好友（对方收到评论卡片） |
 | `douyin_dm_list` | 列出会话 |
 | `douyin_dm_read` | 读某个好友的私信（图片/表情/语音/位置/视频/分享卡片都会标出类型） |
 | `douyin_dm_send` | 发私信（纯文本） |
@@ -132,6 +135,29 @@ node tools/_load-test.mjs    # 用假 ctx 复现 cordis 的 Proxy 陷阱
 的 `to` **留空 = 当前会话对应的好友**，所以在某个好友的会话里聊天时不用传参数。
 
 发送类工具受白名单约束：`peers` 配了就只有名单里的人能收到消息。
+
+### 评论区
+
+`douyin_comment_list` → `douyin_comment_post` / `douyin_comment_share` 是三步走：
+
+```text
+douyin_comment_list   { video: "7697459346984897955" }
+  → { comments: [ { i: 0, author: "…", text: "…", hasShare: true }, … ] }
+
+douyin_comment_post   { video: "…", text: "这条猫也太可爱了" }
+  → { ok: true, posted: true, comment: "…" }
+
+douyin_comment_share  { video: "…", index: 0, to: "某个好友" }
+  → { ok: true, sent: true, target: "某个好友" }
+```
+
+分享出去的评论，好友那边会收到一条卡片，内容形如
+`分享 @某人 的评论 「…」，来自视频 「…」`。
+
+⚠️ **发评论会被抖音要求人机验证**（新号常见）。工具会返回
+`{ ok: false, code: "NEEDS_VERIFY" }` 并带上被遮的手机号尾号；
+到浏览器里把短信验证码填了点「验证」之后，这个号就能正常发评论了。
+这不是 bug，是抖音的风控，代码绕不过去。
 
 ### 图片是**真的**给模型看
 
@@ -207,6 +233,10 @@ curl "http://127.0.0.1:<DSH端口>/dsh-douyin-bridge/status"   # 看 agentModel 
   想看完整历史用 `douyin_history`（读 DSH 会话日志，不受这个限制）。
 - **`mirror` 模式有重复发的风险**：agent 自己调 `douyin_dm_send` 发的内容
   也会被 `mirror` 回发一遍。同一时刻只用一种模式。
+- **发评论会触发人机验证。** 新号在抖音发评论经常弹短信验证码，
+  工具会报 `NEEDS_VERIFY` 而不是假装成功；人工过一次之后这个号就正常了。
+- **分享评论只在视频页布局下能展开「分享给朋友」**（`/video/<id>`）。
+  沉浸式浮层（`?modal_id=`）里点「分享」点不开 —— 所以这两个动作走的是两条打开策略。
 - **语音只能读、不能发。** 网页端没找到发送入口。
 
 ---
@@ -214,7 +244,7 @@ curl "http://127.0.0.1:<DSH端口>/dsh-douyin-bridge/status"   # 看 agentModel 
 ## 想改代码？
 
 抖音的页面结构、cordis 的坑、媒体的坑，全在 **[PITFALLS.md](PITFALLS.md)**。
-25 条，都是实测撞出来又修掉的 —— 改之前先扫一眼，能省很多时间。
+30 条，都是实测撞出来又修掉的 —— 改之前先扫一眼，能省很多时间。
 
 几条最要命的先放这：
 

@@ -41,6 +41,15 @@
 24. [模型能不能看图看 `inputModalities`](#24-模型看见图和看不见图的区别在-inputmodalities)
 25. [验证看图要读原始日志](#25-验证模型看见图了要读原始会话日志)
 
+**评论区**
+
+26. [打开视频有三种方式](#26-打开视频有三种方式风控会随机打断其中任意一种)
+27. [真实鼠标会穿透到背后的信息流](#27-评论区是虚拟列表真实鼠标会穿透到背后的信息流)
+28. [评论框是 Draft.js，聚焦后才挂上来](#28-评论框是-draftjs-富文本聚焦之后才挂上来)
+29. [发布按钮是纯图标](#29-发布按钮没有发布二字是纯图标)
+30. [分享评论只在视频页布局下能展开](#30-分享评论只在视频页布局下能展开分享给朋友)
+31. [发评论会被要短信验证码](#31-发评论会被抖音要短信验证码新号常见)
+
 ---
 
 ## DSH / cordis 侧
@@ -385,3 +394,96 @@ node tools/dsh-rpc.mjs GET /dsh-douyin-bridge/models
 
 `tools/probe-vision.mjs` 就是按这个思路写的：画一张写着字的图 → 注入 →
 从原始日志里找模型有没有把那些字说出来。
+
+---
+
+## 评论区
+
+### 26. 打开视频有三种方式，风控会随机打断其中任意一种
+
+| 方式 | URL | 特点 |
+| --- | --- | --- |
+| 根地址 + modal_id | `https://www.douyin.com/?modal_id=<id>` | **最稳**，URL 不会被换 |
+| 直链视频页 | `https://www.douyin.com/video/<id>` | 有时被重定向到 `/jingxuan` |
+| 搜索结果点卡片 | `/jingxuan` → 点第 N 个卡片 | 弹层，URL 稳定 |
+
+所以 `lib/comment.mjs` 的 `openVideoPage()` 是**三个策略轮着试**的，
+而且要靠 URL 判断有没有被重定向（`/\/video\//`）—— 不然只能干等 20 秒超时。
+
+⚠️ 搜索页的 `?modal_id=` 会被路由**吃掉**（URL 里看不见），
+只有根地址 `https://www.douyin.com/?modal_id=<id>` 留着。
+
+### 27. 评论区是虚拟列表，**真实鼠标会穿透到背后的信息流**
+
+评论区滚一下，元素的屏幕坐标就变了。用旧坐标点「分享」，
+事件会落到**背后的推荐视频卡片**上 —— 页面当场被弹回精选流。
+
+⇒ 评论区里的按钮**一律用 JS `element.click()`**。
+（例外：视频页右栏的「评论」图标、全局的「消息」入口必须用真实鼠标。）
+
+### 28. 评论框是 Draft.js 富文本，**聚焦之后才挂上来**
+
+DOM 里一开始只有一个占位 span（`.public-DraftEditorPlaceholder-root`），
+`contenteditable` 的那个（`.public-DraftEditor-content`）
+要**点一下**才出现。而且它还在视口外（视频页的评论框在 y≈877，视口只有 791px）。
+
+正确顺序：
+
+```js
+root.scrollIntoView({ block: 'center' })   // ① 先滚进视口
+// ② 重新量坐标，真实鼠标点一下聚焦
+// ③ 等 .public-DraftEditor-content[contenteditable="true"] 出现
+await cdp('Input.insertText', { text })    // ④ 用 CDP 插文本
+```
+
+**别用 `document.execCommand('insertText')`** —— 文字进去了，
+但 Draft.js 的 `onChange` 不触发 ⇒ 发布按钮不亮 ⇒ 看起来「没发出去」。
+CDP 的 `Input.insertText` 会走真实输入通道，React 状态才跟得上。
+
+### 29. 发布按钮**没有「发布」二字**，是纯图标
+
+在 `.commentInput-right-ct` 里，从左到右是：贴图（`<input type=file>`）、
+@ 提及、表情、**发送箭头**。按文字搜「发布」永远搜不到。
+
+发送箭头的 svg path 的 `d` 以 `M17.5 30C23.851 30` 开头（和私信的发送按钮同款图标）。
+
+⚠️ **在评论框里按回车不是发布**，会把视频页关掉（URL 变回 `/jingxuan`）。
+
+### 30. 分享评论只在**视频页布局**下能展开「分享给朋友」
+
+沉浸式浮层（`?modal_id=`）里点「分享」，下面试了五种方式都点不开：
+
+- JS `click()` 那个「分享」叶子
+- 真实鼠标点「分享」叶子
+- 真实鼠标点里面的 svg
+- JS `click()` `[data-e2e="video-comment-more"]`（···）
+- 真实鼠标点 ···
+
+而 `/video/<id>` 布局下，**JS `click()` 那个叶子，一次就开**。
+
+展开后的结构（`div.VzoNDwLw`）：
+
+```text
+div.VzoNDwLw
+  ├─ div > div.S874re0p "分享给朋友"   ← 标题
+  ├─ div "某个好友 4 分享"              ← 好友 chip（里面有「分享」叶子）
+  └─ div "另一个好友 分享"               ← 好友 chip
+```
+
+好友名 = chip 文本去掉结尾的「数字 + 分享」。
+
+⇒ 所以 `postComment` 用 modal 布局、`shareComment` 用 video 布局，
+`openVideoPage({ prefer })` 就是干这个的。
+
+### 31. 发评论会被抖音要**短信验证码**（新号常见）
+
+点了发送之后，抖音弹一个「接收短信验证码」的框：
+「为确保是本人操作抖音账号，请输入当前手机号 185\*\*\*\*\*\*52 收到的短信验证码」。
+
+这是**账号级的一次性人机验证**，代码绕不过去 —— 能做的只有：
+
+1. 认出这个弹窗（`detectVerification()`）
+2. 如实报 `{ ok: false, code: 'NEEDS_VERIFY' }`，别报「发送成功」
+3. 人工在浏览器里过一次，之后这个号就正常了
+
+（同类：滑块验证。识别逻辑在 `lib/comment.mjs` 的 `detectVerification()`。）

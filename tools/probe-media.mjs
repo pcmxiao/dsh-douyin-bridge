@@ -7,7 +7,7 @@
  *   ③ 页面上到底有哪些 data-e2e（抖音自己的测试锚点，最稳）
  *
  * 用法：
- *   node tools/probe-media.mjs 菜就多练练
+ *   node tools/probe-media.mjs <好友名>
  *
  * ⚠️ 跑之前先停桥接（POST /dsh-douyin-bridge/stop），否则两边抢同一个页面。
  */
@@ -16,7 +16,7 @@ import { ensurePanel, enterChat } from '../lib/douyin.mjs'
 import { loadConfig } from '../lib/state.mjs'
 
 const cfg = loadConfig()
-const peer = process.argv[2] || '菜就多练练'
+const peer = process.argv[2] || ''
 const log = (m) => console.log(m)
 
 const b = await getBrowser({ reuse: true, port: cfg.browserPort, log })

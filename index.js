@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 import { DouyinBridge } from './lib/bridge.mjs'
 import { search, detail, share, dmList, readDM, sendDM, sendImage, sendEmoji } from './lib/douyin.mjs'
+import { postComment, shareComment, listComments, openVideoPage } from './lib/comment.mjs'
 import { loadConfig, saveConfig, tailLog, paths } from './lib/state.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -164,7 +165,8 @@ function dutyText() {
 /** 人格卡：抖音私信里的「我」是谁 */
 function personaText() {
   return readPrompt('persona.md', [
-    '你是大肥鱼，一个爱刷抖音的普通朋友，在抖音上跟人聊天。',
+    '你是小抖音，一个爱刷抖音的普通朋友，在抖音上跟人聊天。',
+    '（这是占位名 —— 改 prompts/persona.md 换成你自己的昵称。）',
     '短句为主，不用 Markdown，不主动强调自己是 AI，'
     + '需要刷视频、分享、发消息时用 `douyin_*` 工具。',
   ].join('\n'))
@@ -325,6 +327,99 @@ export function apply(ctx, config) {
           note: str(args.note).trim(),
         })
         return safe(r)
+      },
+    },
+
+    {
+      name: 'douyin_comment_list',
+      description: '列出某个视频下面的评论（用来挑要回复/要分享的那一条）。\n'
+        + '· `video` 填视频 id\n'
+        + '· 返回每条的序号、作者、内容、能不能分享\n'
+        + '· 拿到序号之后用 douyin_comment_share 的 `index` 分享，'
+        + '或者用 `comment` 传一段内容来定位。',
+      parameters: {
+        type: 'object',
+        properties: {
+          video: { type: 'string', description: '视频 id' },
+        },
+        required: ['video'],
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args) {
+        const id = str(args.video).trim() || str(args.id).trim()
+        if (!id) return { ok: false, error: '没有视频 id' }
+        const b = await bridge.ensureBrowser()
+        const page = await openVideoPage({ browser: b, ids: [id] })
+        if (!page.ok) return safe(page)
+        const list = await listComments(b)
+        return safe({ ok: true, video: id, count: list.length, comments: list })
+      },
+    },
+
+    {
+      name: 'douyin_comment_post',
+      description: '在某个视频下面**发一条评论**。\n'
+        + '· `video` 填视频 id（也可以是 douyin_detail 拿到的 id）\n'
+        + '· `text` = 评论内容\n'
+        + '· `dryRun: true` = 只把字打进评论框，不真发（可用来探路）\n'
+        + '⚠️ 抖音对新号发评论会弹**短信验证码**。工具会如实报 `NEEDS_VERIFY`，'
+        + '此时到浏览器里把验证码填了、点「验证」，之后这个号就能正常发评论了。',
+      parameters: {
+        type: 'object',
+        properties: {
+          video: { type: 'string', description: '视频 id' },
+          text: { type: 'string', description: '评论内容' },
+          dryRun: { type: 'boolean', description: '只打字不发布' },
+        },
+        required: ['video', 'text'],
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args) {
+        const id = str(args.video).trim() || str(args.id).trim()
+        if (!id) return { ok: false, error: '没有视频 id' }
+        const text = str(args.text).trim()
+        if (!text) return { ok: false, error: '评论内容是空的' }
+        const b = await bridge.ensureBrowser()
+        return safe(await postComment({ browser: b, id, text, dryRun: Boolean(args.dryRun) }))
+      },
+    },
+
+    {
+      name: 'douyin_comment_share',
+      description: '把**某条评论**分享给某个好友（对方会收到一条评论卡片）。\n'
+        + '· `video` 填视频 id\n'
+        + '· `comment` 填评论内容里的一段（用来定位是哪条评论）\n'
+        + '· `index` 可以直接给评论序号（0 起），比 `comment` 更准\n'
+        + '· `to` 填好友名；留空 = 分享给「分享给朋友」列表里的第一个\n'
+        + '· `dryRun: true` = 只看有哪些人能分享，不真发\n'
+        + '⚠️ 走的是视频页的「分享给朋友」弹层，和 douyin_share（分享视频）不是一回事。',
+      parameters: {
+        type: 'object',
+        properties: {
+          video: { type: 'string', description: '视频 id' },
+          comment: { type: 'string', description: '评论内容片段（用来定位评论）' },
+          index: { type: 'number', description: '评论序号（0 起），比 comment 更准' },
+          to: { type: 'string', description: '分享给谁（好友名）' },
+          dryRun: { type: 'boolean', description: '只列能分享的人，不真发' },
+        },
+        required: ['video'],
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args) {
+        const id = str(args.video).trim() || str(args.id).trim()
+        if (!id) return { ok: false, error: '没有视频 id' }
+        const b = await bridge.ensureBrowser()
+        return safe(await shareComment({
+          browser: b,
+          id,
+          comment: str(args.comment).trim(),
+          to: str(args.to).trim(),
+          index: Number.isFinite(Number(args.index)) ? Number(args.index) : -1,
+          dryRun: Boolean(args.dryRun),
+        }))
       },
     },
 

@@ -7,7 +7,7 @@
  *   ③ 发图片 —— 发一张本机图片，验证气泡真的出现了
  *
  * 用法：
- *   node tools/probe-media-chain.mjs               # 默认发给「菜就多练练」
+ *   node tools/probe-media-chain.mjs               # 默认发给「<好友名>」
  *   node tools/probe-media-chain.mjs "好友名"
  *
  * ⚠️ 跑之前先停桥接（POST /dsh-douyin-bridge/stop），否则两边抢同一个页面。
@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const cfg = loadConfig()
-const peer = process.argv[2] || '菜就多练练'
+const peer = process.argv[2] || ''
 const log = (m) => console.log(m)
 
 const b = await getBrowser({ reuse: true, port: cfg.browserPort, log })
