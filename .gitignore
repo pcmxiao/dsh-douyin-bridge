@@ -9,3 +9,4 @@ out/
 config.json
 sessions.json
 tools/_msg.txt
+tools/_m*.txt
