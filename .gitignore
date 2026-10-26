@@ -8,3 +8,4 @@ out/
 .env.*
 config.json
 sessions.json
+tools/_msg.txt
