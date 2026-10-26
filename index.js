@@ -29,6 +29,9 @@ import z from '@deepseek-ai/schemastery'
 import { DouyinBridge } from './lib/bridge.mjs'
 import { search, detail, share, dmList, readDM, sendDM, sendImage, sendEmoji } from './lib/douyin.mjs'
 import { postComment, shareComment, listComments, openVideoPage } from './lib/comment.mjs'
+import {
+  grabSticker, grabFromVideo, listStickers, findSticker, stickerPath, removeSticker, stickerStats,
+} from './lib/stickers.mjs'
 import { loadConfig, saveConfig, tailLog, paths } from './lib/state.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -420,6 +423,121 @@ export function apply(ctx, config) {
           index: Number.isFinite(Number(args.index)) ? Number(args.index) : -1,
           dryRun: Boolean(args.dryRun),
         }))
+      },
+    },
+
+    {
+      name: 'douyin_sticker_grab',
+      description: '把一个**视频评论区里的表情/图片**收集到本地表情库。\n'
+        + '· `video` 填视频 id；留空 = 用当前页面上那个视频\n'
+        + '· 会自动把评论区滚几屏，把所有表情图抓下来\n'
+        + '· webp 会自动转成 png（抖音发图不认 webp）\n'
+        + '· 同一张图只存一份（按内容指纹去重）\n'
+        + '⚠️ 收集是**存到本地**，不是收藏进抖音账号 —— 抖音没有收藏接口。',
+      parameters: {
+        type: 'object',
+        properties: {
+          video: { type: 'string', description: '视频 id（留空 = 当前页面）' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '给这批表情打的标签',
+          },
+        },
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args) {
+        const b = await bridge.ensureBrowser()
+        const id = str(args.video).trim()
+        const tags = Array.isArray(args.tags) ? args.tags.map(String) : []
+        return safe(await grabFromVideo({ browser: b, id, tags }))
+      },
+    },
+
+    {
+      name: 'douyin_sticker_list',
+      description: '看本地表情库里有什么。\n'
+        + '· `query` 按名字/标签过滤\n'
+        + '· 返回每个表情的 id、名字、大小、格式\n'
+        + '· 拿到 id 之后用 `douyin_sticker_send` 发出去。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索词（名字/标签）' },
+          limit: { type: 'number', description: '最多几条（默认 50）' },
+        },
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args) {
+        const list = listStickers({ query: str(args.query), limit: Number(args.limit) || 50 })
+        const st = stickerStats()
+        return safe({
+          ok: true,
+          count: list.length,
+          total: st.count,
+          bytes: st.bytes,
+          kinds: st.kinds,
+          dir: st.dir,
+          stickers: list.map((s) => ({
+            id: s.id, name: s.name, ext: s.ext, bytes: s.bytes,
+            tags: s.tags || [], from: s.from || '',
+          })),
+        })
+      },
+    },
+
+    {
+      name: 'douyin_sticker_send',
+      description: '从**本地表情库**发一个表情给好友。\n'
+        + '· `sticker` 填表情 id（或名字，支持部分匹配）\n'
+        + '· `to` 留空 = 当前会话对应的好友\n'
+        + '· 走的是发图链路，和 `douyin_dm_send_image` 一样\n'
+        + '⚠️ 只能发库里有的；先用 douyin_sticker_list 看。',
+      parameters: {
+        type: 'object',
+        properties: {
+          sticker: { type: 'string', description: '表情 id 或名字' },
+          to: { type: 'string', description: '发给谁（留空 = 当前会话）' },
+        },
+        required: ['sticker'],
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args, exec) {
+        const key = str(args.sticker).trim()
+        if (!key) return { ok: false, error: '没给表情 id' }
+        const to = str(args.to).trim() || peerOfExec(exec)
+        if (!to) return { ok: false, error: '不知道发给谁：要么指定 to，要么在某个好友的会话里调用' }
+        const bad = checkTarget(to, '发送目标')
+        if (bad) return { ok: false, error: bad }
+
+        const st = findSticker(key)
+        if (!st) return { ok: false, error: `表情库里没有「${key}」，先用 douyin_sticker_list 看看` }
+        const file = stickerPath(st)
+        if (!file) return { ok: false, error: `表情文件不见了：${st.file}` }
+
+        const b = await bridge.ensureBrowser()
+        const r = await sendImage({ browser: b, file, uname: to })
+        return safe({ ...r, sticker: { id: st.id, name: st.name, ext: st.ext } })
+      },
+    },
+
+    {
+      name: 'douyin_sticker_remove',
+      description: '从本地表情库里删掉一个表情（文件和清单一起删）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          sticker: { type: 'string', description: '表情 id 或名字' },
+        },
+        required: ['sticker'],
+        additionalProperties: false,
+      },
+      output: TEXT_OUTPUT,
+      async execute(args) {
+        return safe(removeSticker(str(args.sticker).trim()))
       },
     },
 

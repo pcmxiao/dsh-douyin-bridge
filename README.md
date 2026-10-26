@@ -124,6 +124,10 @@ node tools/_load-test.mjs    # 用假 ctx 复现 cordis 的 Proxy 陷阱
 | `douyin_dm_send` | 发私信（纯文本） |
 | `douyin_dm_send_image` | 发**图片**（本机文件，或 base64） |
 | `douyin_dm_send_emoji` | 发**表情**（按名字，支持部分匹配） |
+| `douyin_sticker_grab` | 把视频评论区里的表情**收集到本地表情库** |
+| `douyin_sticker_list` | 看本地表情库 |
+| `douyin_sticker_send` | 从本地表情库发一个给好友 |
+| `douyin_sticker_remove` | 从库里删一个 |
 | `douyin_history` | 读某个好友的**完整历史**（从 DSH 会话日志，不受抖音虚拟列表限制） |
 | `douyin_duty` | 读值班章程 |
 | `douyin_status` | 看桥接状态（含当前模型、附件服务有没有挂上） |
@@ -158,6 +162,34 @@ douyin_comment_share  { video: "…", index: 0, to: "某个好友" }
 `{ ok: false, code: "NEEDS_VERIFY" }` 并带上被遮的手机号尾号；
 到浏览器里把短信验证码填了点「验证」之后，这个号就能正常发评论了。
 这不是 bug，是抖音的风控，代码绕不过去。
+
+### 本地表情库
+
+抖音**没有收藏表情的接口**，UI 上也没有入口（表情面板只有「表情 / GIF」
+两个 tab，格子上 hover、右键都没反应）。所以这里走的是另一条路：
+
+```text
+douyin_sticker_grab  { video: "…" }
+  → 把评论区里的表情图全抓下来，存进本地库
+  → { ok: true, candidates: 32, saved: 32, library: { total: 32, kinds: {…} } }
+
+douyin_sticker_list  { query: "猫" }
+  → { stickers: [ { id: "3bf853fc8482", name: "1f49a", ext: ".png" }, … ] }
+
+douyin_sticker_send  { sticker: "3bf853fc8482", to: "某个好友" }
+  → { ok: true, verified: true }
+```
+
+为什么这条路是稳的：
+
+- 评论区里的表情本身就是**普通 CDN 图片**（`p*-pc-sign.douyinpic.com`、
+  `byteimg.com/…/twemoji/`），Node 直接 `fetch` 就是 200，连 referer 都不用带
+- 发送复用已经跑通的发图链路（`sendImage`），不需要碰表情面板
+- **webp 会自动转 png** —— 抖音的上传控件不认 webp，塞进去只会得到
+  「选完文件后没弹出发送确认框」，而且报错完全不提格式
+
+库落在 `$DSH_HOME/douyin-bridge/stickers/`，`index.json` 是清单，图片按
+内容指纹命名（同一张图只存一份）。
 
 ### 图片是**真的**给模型看
 
