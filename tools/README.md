@@ -14,6 +14,7 @@
 | `probe-media-chain.mjs` | **媒体链路全跑一遍**：读（认图片/表情/语音）→ 发表情 → 发图片，每步验证气泡真的出现。 |
 | `probe-vision.mjs` | **决定性测试**：画一张有字的图注入会话，看模型能不能说出图里的字。判断「AI 到底看不看得见图」就靠它。 |
 | `probe-canary.mjs` | **选择器自检**：逐个探测关键选择器，看哪条降级链在生效、哪条全挂了。抖音改版后先跑这个。 |
+| `probe-respawn.mjs` | **浏览器生命周期回归测试**：并发取浏览器会不会弹多个窗口 / 窗口关掉后会不会自己弹回来。用临时 profile，跑完不留痕迹。`--real` 用真实 profile 跑。 |
 | `session-log.mjs` | 解压并打印 DSH 的会话事件（`session.v4.jsonl.zstd`），看 LLM 到底回了什么。 |
 | `shot.mjs` | 截一张图。工具返回 ok 但没反应时，截图一眼就知道卡在哪。 |
 
@@ -44,6 +45,9 @@ node tools/session-log.mjs "<sessionId>"
 
 # 抖音改版了？先跑选择器自检，看哪条降级链挂了
 node tools/probe-canary.mjs
+
+# 浏览器会不会反复重启？（用临时 profile，安全）
+node tools/probe-respawn.mjs
 
 # 卡住了？截个图看看页面长什么样
 node tools/shot.mjs

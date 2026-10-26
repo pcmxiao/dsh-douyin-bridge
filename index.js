@@ -940,7 +940,8 @@ export function apply(ctx, config) {
               return
             }
             if (req.method === 'POST' && p === '/start') {
-              bridge.start()
+              // 🔴 显式「开始」= 用户想要浏览器回来 ⇒ 解除「被关掉了」的锁
+              bridge.start({ relaunchBrowser: true })
               sendJson(res, 200, { ok: true, status: bridge.status() })
               return
             }

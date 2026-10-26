@@ -59,6 +59,13 @@ dsh plugin --profile desktop add dsh-douyin-bridge
 
 之后它自己就开始轮询了。
 
+> 💡 **窗口关掉了不会再自己弹回来。**
+> 你要是手动把浏览器关了，桥会**停下来**（不会每隔几秒弹一个窗口骚扰你），
+> 日志里会写「浏览器窗口被关掉了 —— 桥接暂停」。
+> 想让它回来：再点一次 **「打开浏览器登录」**，或者
+> `POST /dsh-douyin-bridge/start`。
+> 浏览器**自己崩了**的话会自动重连（30 秒一次，最多 3 次）。
+
 > ⚠️ **桌面版（Electron）的 profile 只能由应用自己管。**
 > `dsh plugin --profile desktop …` 会直接报
 > `profile "desktop" is managed exclusively by the Electron application`。
