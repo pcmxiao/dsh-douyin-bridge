@@ -1,0 +1,16 @@
+fix(window): 窗口跑到屏幕外时自动拉回来
+
+用户报「你拉出的浏览器页面我打不开」。查下来窗口 left 是 -1524 ——
+整块在屏幕左边外面。进程活着、CDP 能连、能截图、windowState 还是
+'normal'，所以各种检测都显示「一切正常」，但人根本看不见窗口。
+
+成因是早期试过的 setWindowBounds({ left: -2000 })（PITFALLS 第 22 条），
+方案废弃了但窗口位置是持久化的，一直复现。
+
+ensureWindowVisible() 现在除了恢复最小化，还会检查位置：
+left/top 是负数或 left 超出屏宽 ⇒ 拉回 (0,0)。
+
+顺带修 tools/dsh-rpc.mjs 的端口发现：DSH 端口每次启动随机
+（现在是 64125），写死的端口列表必然过期；而且探测 `/` 时
+DSH 不返回 2xx，会把对的端口判成不可达。改成用
+/api/pluginManager/list 确认「这是不是 DSH 的 HTTP 口」。

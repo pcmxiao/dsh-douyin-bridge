@@ -41,9 +41,13 @@ async function resolveBaseUrl() {
   // ① 找 DSH 进程持有的监听端口
   //    思路：先拿 DSH 主进程的 PID，再列出该 PID 的 LISTEN 端口。
   //    （命令行里没有 --port，只能这样反查。）
+  //
+  // 🔴 踩过的坑：DSH 的端口是**每次启动随机**的（64125 / 62942 / 54257 …），
+  //    写死端口列表必然过期。而且 `reachable()` 探测 `/` 时 DSH 回的不是 2xx，
+  //    所以「端口连得上」不等于「这个端口是 DSH 的 HTTP 口」——
+  //    要再确认它能应答一个真接口。
   try {
     const { execFileSync } = await import('node:child_process')
-    // 用 cmd 调 powershell 并强制单行输出，避免格式化成表格
     const script = [
       "$pids = @(Get-CimInstance Win32_Process -Filter \"Name like '%DeepSeek%'\" | ForEach-Object { $_.ProcessId })",
       "$ports = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $pids -contains $_.OwningProcess } | ForEach-Object { $_.LocalPort } | Sort-Object -Unique)",
@@ -55,18 +59,40 @@ async function resolveBaseUrl() {
     const ports = String(out).match(/\d{4,5}/g) || []
     for (const p of ports) {
       const url = `http://127.0.0.1:${p}`
-      if (await reachable(url)) return url
+      if (await isDshHttp(url)) return url
     }
   } catch { /* 拿不到就往下走 */ }
 
   // ② 探测常见端口
-  for (const port of [54257, 62942, 59295, 43120, 3080]) {
+  for (const port of [64125, 54257, 62942, 59295, 43120, 3080]) {
     const url = `http://127.0.0.1:${port}`
-    if (await reachable(url)) return url
+    if (await isDshHttp(url)) return url
   }
 
   // ③ 都不行就退回默认值（报错时至少提示是哪个地址）
-  return 'http://127.0.0.1:62942'
+  return 'http://127.0.0.1:64125'
+}
+
+/**
+ * 这个地址是不是 DSH 的 HTTP 口？
+ *
+ * 光「连得上」不够（DSH 还开着 devtools / CDP 之类的端口）。
+ * 拿一个一定存在的接口试一下：返回任何 HTTP 状态码都算通，
+ * 连不上 / 不是 HTTP 才算不通。
+ */
+function isDshHttp(base) {
+  return new Promise((resolve) => {
+    let u
+    try { u = new URL(base) } catch { return resolve(false) }
+    const req = http.request({
+      hostname: u.hostname, port: u.port || 80,
+      path: '/api/pluginManager/list', method: 'POST', timeout: 2000,
+      headers: { 'content-type': 'application/json' },
+    }, (res) => { res.resume(); resolve(true) })
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => { req.destroy(); resolve(false) })
+    req.end('{}')
+  })
 }
 
 function reachable(base) {
